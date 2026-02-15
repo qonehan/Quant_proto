@@ -1,17 +1,18 @@
 """
-기울기(slope) 타겟 변수 생성 모듈.
+양방향 기울기(slope) 타겟 변수 생성 모듈.
 
 기울기 정의:
   현재 시점 t의 종가를 P(t)라 할 때,
-  미래 시점 t+1, t+2, ... 를 순회하며 가격이 x% 이상 하락한
+  미래 시점 t+1, t+2, ... 를 순회하며 가격이 x% 이상 상승 또는 하락한
   첫 번째 시점 t+k를 찾는다.
 
-  slope = x / k   (k = 하락에 걸린 분 수)
+  상승 (양의 기울기):
+    P(t+k) >= P(t) * (1 + x/100) 일 때 slope = +x / k
+  하락 (음의 기울기):
+    P(t+k) <= P(t) * (1 - x/100) 일 때 slope = -x / k
 
-  만약 slope_max_window 내에서 x% 하락이 발생하지 않으면:
-    slope = 0  (하락하지 않음 → 기울기 없음)
-
-  slope 값이 클수록 급격한 하락을 의미한다.
+  상승과 하락 중 먼저 발생한 방향을 채택한다.
+  slope_max_window 내에서 어느 방향으로도 x% 변동이 없으면 slope = 0.
 """
 
 from __future__ import annotations
@@ -29,11 +30,13 @@ def compute_slopes(
     close_prices: pd.Series,
     params: HyperParams,
 ) -> np.ndarray:
-    """각 시점에 대해 기울기(slope) 값을 계산한다.
+    """각 시점에 대해 양방향 기울기(slope) 값을 계산한다.
+
+    상승이 먼저 오면 양의 기울기, 하락이 먼저 오면 음의 기울기를 반환.
 
     Args:
         close_prices: 1분봉 종가 시계열
-        params: x (목표 하락률 %), slope_max_window (최대 관측 분)
+        params: x (목표 변동률 %), slope_max_window (최대 관측 분)
 
     Returns:
         (T,) 형태의 slope 배열.
@@ -51,14 +54,24 @@ def compute_slopes(
         if p0 == 0:
             continue
 
-        threshold = p0 * (1 - x / 100.0)
-        found = False
+        up_threshold = p0 * (1 + x / 100.0)    # 상승 임계값
+        down_threshold = p0 * (1 - x / 100.0)  # 하락 임계값
 
         end = min(t + max_w + 1, T)
+
+        found = False
         for k_idx in range(t + 1, end):
-            if prices[k_idx] <= threshold:
-                k = k_idx - t  # 걸린 분 수
+            pk = prices[k_idx]
+            k = k_idx - t  # 걸린 분 수
+
+            if pk >= up_threshold:
+                # 상승이 먼저 발생 → 양의 기울기
                 slopes[t] = x / k
+                found = True
+                break
+            elif pk <= down_threshold:
+                # 하락이 먼저 발생 → 음의 기울기
+                slopes[t] = -(x / k)
                 found = True
                 break
 
@@ -122,6 +135,7 @@ def build_targets_from_raw(
 
     Returns:
         (num_samples,) 형태의 slope 타겟 배열
+        양수 → 상승 기울기, 음수 → 하락 기울기, 0 → 변동 없음
     """
     # 전체 종가에 대해 slope 계산
     all_slopes = compute_slopes(df["close"], params)

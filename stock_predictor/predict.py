@@ -68,8 +68,9 @@ class SlopePredictor:
 
         Returns:
             예측된 기울기(slope) 값.
-            양수 → 하락 기울기 존재 (값이 클수록 급격한 하락)
-            0에 가까움 → 하락 기울기 미미
+            양수 → 상승 기울기 (값이 클수록 급격한 상승)
+            음수 → 하락 기울기 (절대값이 클수록 급격한 하락)
+            0에 가까움 → 변동 미미
         """
         features = build_features(ohlcv_df, self.params)
 

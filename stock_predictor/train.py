@@ -218,9 +218,9 @@ def train(
     if len(test_preds) > 0:
         mse = float(np.mean((test_preds - test_trues) ** 2))
         mae = float(np.mean(np.abs(test_preds - test_trues)))
-        # 방향 정확도: slope > 0 여부가 일치하는 비율
+        # 방향 정확도: 부호(상승/하락/횡보) 일치 비율
         dir_acc = float(np.mean(
-            (test_preds > 0).astype(int) == (test_trues > 0).astype(int)
+            np.sign(test_preds).astype(int) == np.sign(test_trues).astype(int)
         ))
         metrics = {"mse": mse, "mae": mae, "direction_accuracy": dir_acc}
         logger.info("테스트 결과 — MSE: %.6f, MAE: %.6f, 방향정확도: %.2f%%",

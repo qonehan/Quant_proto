@@ -118,9 +118,15 @@ def cmd_predict(args):
     print(f"  예측 기울기: {slope:.4f}")
     if slope > 0:
         estimated_minutes = params.x / slope
+        print(f"  방향: 상승")
+        print(f"  해석: {params.x}% 상승에 약 {estimated_minutes:.1f}분 소요 예상")
+    elif slope < 0:
+        estimated_minutes = params.x / abs(slope)
+        print(f"  방향: 하락")
         print(f"  해석: {params.x}% 하락에 약 {estimated_minutes:.1f}분 소요 예상")
     else:
-        print(f"  해석: {params.x}% 하락 가능성 낮음")
+        print(f"  방향: 횡보")
+        print(f"  해석: {params.x}% 변동 가능성 낮음")
     print("=" * 60)
 
 

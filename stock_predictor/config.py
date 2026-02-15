@@ -3,12 +3,14 @@
 
 핵심 하이퍼파라미터:
   n: 모델 입력으로 사용할 과거 분봉 수 (lookback window)
-  x: 기울기 계산에 사용할 목표 하락률 (%)
+  x: 기울기 계산에 사용할 목표 변동률 (%)
 
 기울기 정의:
-  현재 시점에서 가격이 x% 하락하는 데 걸린 시간(분)을 t라 할 때,
-  slope = x / t
-  가격이 관측 윈도우 내에서 x% 하락하지 않으면 slope = 0
+  현재 시점에서 가격이 x% 변동하는 데 걸린 시간(분)을 t라 할 때,
+  상승: slope = +x / t  (양의 기울기)
+  하락: slope = -x / t  (음의 기울기)
+  상승/하락 중 먼저 발생한 방향을 채택.
+  관측 윈도우 내에서 x% 변동이 없으면 slope = 0
 """
 
 from dataclasses import dataclass, field
@@ -18,7 +20,7 @@ from dataclasses import dataclass, field
 class HyperParams:
     # --- 핵심 하이퍼파라미터 ---
     n: int = 60               # 입력 시퀀스 길이 (분)
-    x: float = 1.0            # 목표 하락률 (%)
+    x: float = 1.0            # 목표 변동률 (%)
 
     # --- 기울기 계산 ---
     slope_max_window: int = 60  # 기울기 산출 시 최대 관측 윈도우 (분)
@@ -32,6 +34,12 @@ class HyperParams:
     rsi_period: int = 14
     bb_period: int = 20
     bb_std: float = 2.0
+    stoch_period: int = 14       # Stochastic Oscillator 기간
+    stoch_smooth: int = 3        # Stochastic %D 스무딩
+    atr_period: int = 14         # ATR 기간
+    cci_period: int = 20         # CCI 기간
+    roc_period: int = 10         # ROC 기간
+    mfi_period: int = 14         # MFI 기간
 
     # --- 모델 ---
     hidden_size: int = 128
