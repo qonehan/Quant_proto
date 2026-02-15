@@ -1,7 +1,7 @@
 # 삼성전자 주가 기울기(Slope) 예측 모델
 
 삼성전자(005930)의 1분봉 데이터를 수집하고, 기술적 지표 피처를 생성하여
-**LSTM + Temporal Attention** 기반 시계열 모델로 주가 하락 기울기를 예측하는 프로젝트입니다.
+**LSTM + Temporal Attention** 기반 시계열 모델로 주가 **상승/하락 기울기**를 예측하는 프로젝트입니다.
 
 ---
 
@@ -18,7 +18,7 @@ Quant_proto/
     ├── config.py                    # 하이퍼파라미터 정의
     ├── data_fetcher.py              # 데이터 수집 (yfinance / 한투 API)
     ├── feature_engineer.py          # 기술적 지표 피처 생성 + 시퀀스 행렬 구축
-    ├── target_builder.py            # 기울기(slope) 타겟 변수 생성
+    ├── target_builder.py            # 양방향 기울기(slope) 타겟 변수 생성
     ├── model.py                     # LSTM + Attention 모델 정의
     ├── train.py                     # 학습 파이프라인
     ├── predict.py                   # 추론 클래스
@@ -27,30 +27,33 @@ Quant_proto/
 
 ---
 
-## 2. 핵심 개념: 기울기(Slope) 정의
+## 2. 핵심 개념: 양방향 기울기(Slope) 정의
 
 ### 수식
 
 현재 시점 `t`의 종가를 `P(t)`라 할 때:
 
-1. 미래 시점 `t+1, t+2, ...`를 순회하며 가격이 **x% 이상 하락**한 첫 시점 `t+k`를 찾는다
-2. **slope = x / k** (k = x% 하락에 걸린 분 수)
-3. `slope_max_window` 내에서 x% 하락이 발생하지 않으면 **slope = 0**
+1. 미래 시점 `t+1, t+2, ...`를 순회하며 가격이 **x% 이상 상승 또는 하락**한 첫 시점 `t+k`를 찾는다
+2. **상승이 먼저 발생**: `slope = +x / k` (양의 기울기)
+3. **하락이 먼저 발생**: `slope = -x / k` (음의 기울기)
+4. `slope_max_window` 내에서 어느 방향으로도 x% 변동이 없으면 **slope = 0**
 
 ### 해석
 
 | slope 값 | 의미 |
 |-----------|------|
-| 높음 (예: 1.0) | 급격한 하락 — 1%가 1분 만에 발생 |
-| 낮음 (예: 0.05) | 완만한 하락 — 1%가 20분에 걸쳐 발생 |
-| 0 | 관측 윈도우 내에서 x% 하락이 발생하지 않음 |
+| 양수 (예: +1.0) | 급격한 상승 — 1%가 1분 만에 상승 |
+| 양수 (예: +0.05) | 완만한 상승 — 1%가 20분에 걸쳐 상승 |
+| 음수 (예: -1.0) | 급격한 하락 — 1%가 1분 만에 하락 |
+| 음수 (예: -0.05) | 완만한 하락 — 1%가 20분에 걸쳐 하락 |
+| 0 | 관측 윈도우 내에서 x% 변동이 발생하지 않음 (횡보) |
 
 ### 하이퍼파라미터
 
 | 파라미터 | 기본값 | 설명 |
 |----------|--------|------|
 | `n` | 60 | 모델 입력 시퀀스 길이 (분) |
-| `x` | 1.0 | 목표 하락률 (%) |
+| `x` | 1.0 | 목표 변동률 (%) |
 | `slope_max_window` | 60 | 기울기 산출 시 최대 관측 윈도우 (분) |
 
 `n`과 `x`는 모델에서 **고정된 하이퍼파라미터**로 사용됩니다.
@@ -76,35 +79,69 @@ DataFrame (T rows):
 
 ### 3-2. 피처 행렬
 
-`feature_engineer.py`의 `build_features()`가 원본 OHLCV에서 **14개 기술적 지표**를 생성합니다:
+`feature_engineer.py`의 `build_features()`가 원본 OHLCV에서 **29개 기술적 지표**를 생성합니다:
 
-| # | 피처명 | 설명 |
-|---|--------|------|
-| 1 | `pct_change` | 종가 변화율 |
-| 2 | `ma5_gap` | 5분 이동평균 대비 괴리율 |
-| 3 | `ma10_gap` | 10분 이동평균 대비 괴리율 |
-| 4 | `ma20_gap` | 20분 이동평균 대비 괴리율 |
-| 5 | `rsi` | RSI (14분, 0~1 정규화) |
-| 6 | `macd` | MACD / 종가 |
-| 7 | `macd_signal` | MACD Signal / 종가 |
-| 8 | `macd_hist` | MACD Histogram / 종가 |
-| 9 | `bb_pctb` | 볼린저밴드 %b |
-| 10 | `bb_bandwidth` | 볼린저밴드 너비 / 이동평균 |
-| 11 | `volume_pct` | 거래량 변화율 |
-| 12 | `hl_range` | (고가 - 저가) / 종가 |
-| 13 | `open_close_ratio` | (시가 - 종가) / 종가 |
-| 14 | `volume_ma5_ratio` | 거래량 / 거래량 5분 이동평균 |
+#### 기본 피처 (14개)
 
-NaN이 발생하는 초기 워밍업 구간(약 26개 봉)은 자동 제거됩니다.
+| # | 피처명 | 카테고리 | 설명 |
+|---|--------|----------|------|
+| 1 | `pct_change` | 가격 | 종가 변화율 |
+| 2 | `ma5_gap` | 추세 | 5분 이동평균 대비 괴리율 |
+| 3 | `ma10_gap` | 추세 | 10분 이동평균 대비 괴리율 |
+| 4 | `ma20_gap` | 추세 | 20분 이동평균 대비 괴리율 |
+| 5 | `rsi` | 모멘텀 | RSI (14분, 0~1 정규화) |
+| 6 | `macd` | 추세 | MACD / 종가 |
+| 7 | `macd_signal` | 추세 | MACD Signal / 종가 |
+| 8 | `macd_hist` | 추세 | MACD Histogram / 종가 |
+| 9 | `bb_pctb` | 변동성 | 볼린저밴드 %b |
+| 10 | `bb_bandwidth` | 변동성 | 볼린저밴드 너비 / 이동평균 |
+| 11 | `volume_pct` | 거래량 | 거래량 변화율 |
+| 12 | `hl_range` | 변동성 | (고가 - 저가) / 종가 |
+| 13 | `open_close_ratio` | 가격 | (시가 - 종가) / 종가 |
+| 14 | `volume_ma5_ratio` | 거래량 | 거래량 / 거래량 5분 이동평균 |
+
+#### 추가 피처 (15개)
+
+| # | 피처명 | 카테고리 | 설명 |
+|---|--------|----------|------|
+| 15 | `stoch_k` | 모멘텀 | Stochastic Oscillator %K (0~1) |
+| 16 | `stoch_d` | 모멘텀 | Stochastic Oscillator %D (0~1) |
+| 17 | `williams_r` | 모멘텀 | Williams %R (-1~0) |
+| 18 | `atr_ratio` | 변동성 | ATR (Average True Range) / 종가 |
+| 19 | `obv_change` | 거래량 | OBV (On Balance Volume) 변화율 |
+| 20 | `cci` | 추세/모멘텀 | CCI (Commodity Channel Index) / 200 |
+| 21 | `roc` | 모멘텀 | ROC (Rate of Change, 10분) |
+| 22 | `mfi` | 거래량 | MFI (Money Flow Index, 0~1) |
+| 23 | `vwap_gap` | 가격 | VWAP 대비 괴리율 |
+| 24 | `candle_body_ratio` | 캔들스틱 | 캔들 몸통 비율: \|open-close\| / (high-low) |
+| 25 | `upper_shadow` | 캔들스틱 | 윗꼬리 비율 |
+| 26 | `lower_shadow` | 캔들스틱 | 아래꼬리 비율 |
+| 27 | `price_position` | 가격 | 가격 위치: (close-low) / (high-low) |
+| 28 | `high_pct_change` | 가격 | 고가 변화율 |
+| 29 | `low_pct_change` | 가격 | 저가 변화율 |
+
+#### 추가 피처 설정 (config.py)
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `stoch_period` | 14 | Stochastic Oscillator 기간 |
+| `stoch_smooth` | 3 | Stochastic %D 스무딩 기간 |
+| `atr_period` | 14 | ATR 기간 |
+| `cci_period` | 20 | CCI 기간 |
+| `roc_period` | 10 | ROC 기간 |
+| `mfi_period` | 14 | MFI 기간 |
+
+NaN이 발생하는 초기 워밍업 구간은 자동 제거됩니다.
+무한대(inf) 값도 자동으로 제거됩니다.
 
 ### 3-3. 시퀀스 행렬 (모델 입력)
 
 `build_sequence_matrix()`가 피처 DataFrame을 슬라이딩 윈도우 방식으로 3D 텐서로 변환합니다:
 
 ```
-입력 shape: (samples, n, 14)
+입력 shape: (samples, n, 29)
                 │      │   │
-                │      │   └── 피처 수 (14개 기술적 지표)
+                │      │   └── 피처 수 (29개 기술적 지표)
                 │      └────── 시퀀스 길이 (n분, 기본 60)
                 └───────────── 샘플 수 (T - warmup - n + 1)
 ```
@@ -120,6 +157,9 @@ NaN이 발생하는 초기 워밍업 구간(약 26개 봉)은 자동 제거됩�
 타겟 shape: (samples,)
                 │
                 └── 각 윈도우의 마지막 시점에서 계산된 slope 값
+                    양수: 상승 기울기
+                    음수: 하락 기울기
+                    0:    변동 없음 (횡보)
 ```
 
 ---
@@ -127,7 +167,7 @@ NaN이 발생하는 초기 워밍업 구간(약 26개 봉)은 자동 제거됩�
 ## 4. 모델 아키텍처
 
 ```
-Input (batch, n, 14)
+Input (batch, n, 29)
         │
    ┌────▼────┐
    │LayerNorm│  ← 입력 정규화
@@ -154,7 +194,7 @@ Input (batch, n, 14)
    └────┬────┘
         │
         ▼
-  (batch,)         ← 예측 기울기 (slope)
+  (batch,)         ← 예측 기울기 (slope): 양수=상승, 음수=하락
 ```
 
 ### 모델 파라미터
@@ -165,7 +205,7 @@ Input (batch, n, 14)
 | LSTM num_layers | 2 |
 | Dropout | 0.2 |
 | Bidirectional | False |
-| 총 파라미터 수 | ~222,000 |
+| 총 파라미터 수 | ~230,000 |
 
 ---
 
@@ -174,8 +214,9 @@ Input (batch, n, 14)
 `train.py`의 `train()` 함수가 아래 흐름을 실행합니다:
 
 ```
-데이터 로드 → 피처 생성 → 타겟 생성 → 시퀀스 행렬 구축
-    → StandardScaler 정규화 → Train/Val/Test 분할 (80/10/10)
+데이터 로드 → 피처 생성 (29개) → 타겟 생성 (양방향 slope)
+    → 시퀀스 행렬 구축 → StandardScaler 정규화
+    → Train/Val/Test 분할 (80/10/10)
     → LSTM 학습 (Adam, MSE Loss, Gradient Clipping)
     → ReduceLROnPlateau + Early Stopping
     → 최적 모델 저장 → 테스트 평가
@@ -196,7 +237,7 @@ Input (batch, n, 14)
 |------|------|
 | MSE | 평균 제곱 오차 |
 | MAE | 평균 절대 오차 |
-| Direction Accuracy | slope > 0 여부의 방향 정확도 (하락 발생/미발생 예측) |
+| Direction Accuracy | 부호(상승/하락/횡보) 일치 비율 (`np.sign` 기반) |
 
 ### 체크포인트 저장 내용
 
@@ -207,7 +248,7 @@ Input (batch, n, 14)
     "model_state":  모델 가중치,
     "scaler_mean":  StandardScaler mean,
     "scaler_scale": StandardScaler scale,
-    "num_features": 피처 수 (14),
+    "num_features": 피처 수 (29),
     "params":       HyperParams 인스턴스,
 }
 ```
@@ -251,7 +292,16 @@ python -m stock_predictor predict --checkpoint checkpoints/best_model.pt
 삼성전자 (005930) 기울기 예측
   설정: n=60분, x=1.0%
   예측 기울기: 0.0832
-  해석: 1.0% 하락에 약 12.0분 소요 예상
+  방향: 상승
+  해석: 1.0% 상승에 약 12.0분 소요 예상
+```
+
+```
+삼성전자 (005930) 기울기 예측
+  설정: n=60분, x=1.0%
+  예측 기울기: -0.1250
+  방향: 하락
+  해석: 1.0% 하락에 약 8.0분 소요 예상
 ```
 
 ---
@@ -268,17 +318,18 @@ python -m stock_predictor predict --checkpoint checkpoints/best_model.pt
          │  DataFrame (T, 5): open/high/low/close/volume
          ▼
 ┌─────────────────┐
-│feature_engineer │  14개 기술적 지표 생성
-└────────┬────────┘
-         │  DataFrame (T', 14)  ← NaN 구간 제거
+│feature_engineer │  29개 기술적 지표 생성
+└────────┬────────┘    가격(6) + 추세(5) + 모멘텀(6) + 변동성(4)
+         │            + 거래량(4) + 캔들스틱(4)
+         │  DataFrame (T', 29)  ← NaN/inf 구간 제거
          ▼
 ┌─────────────────┐            ┌──────────────┐
 │build_sequence   │            │target_builder│
-│    _matrix      │            │              │
+│    _matrix      │            │ (양방향 slope)│
 └────────┬────────┘            └──────┬───────┘
          │                            │
-    (samples, n, 14)           (samples,) slope
-         │                            │
+    (samples, n, 29)           (samples,) slope
+         │                     (+:상승, -:하락, 0:횡보)
          ▼                            ▼
 ┌─────────────────────────────────────────────┐
 │              StandardScaler                 │
@@ -293,6 +344,7 @@ python -m stock_predictor predict --checkpoint checkpoints/best_model.pt
                      │
                      ▼
               예측 slope 값
+         (+:상승 예측, -:하락 예측)
 ```
 
 ---
