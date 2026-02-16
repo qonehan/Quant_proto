@@ -1,0 +1,156 @@
+"""
+비트코인 기울기 예측 모델 — 메인 진입점.
+
+사용법:
+  # 학습 (Binance + 온체인 데이터)
+  python -m crypto_predictor train
+
+  # 학습 (모의 데이터)
+  python -m crypto_predictor train --mock --mock-minutes 500
+
+  # 추론 (최신 데이터로 기울기 예측)
+  python -m crypto_predictor predict
+
+  # 하이퍼파라미터 변경
+  python -m crypto_predictor train --n 30 --x 0.5 --epochs 200
+
+  # 온체인 데이터 없이 학습 (기술적 지표만)
+  python -m crypto_predictor train --no-onchain --no-fear-greed
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+
+from .config import HyperParams
+from .data_fetcher import fetch_all_data, generate_mock_data
+from .predict import SlopePredictor
+from .train import train
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="비트코인(BTC) 기울기(slope) 예측 모델"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # --- train ---
+    tr = sub.add_parser("train", help="모델 학습")
+    tr.add_argument("--n", type=int, default=60,
+                     help="입력 시퀀스 길이 (분)")
+    tr.add_argument("--x", type=float, default=1.0,
+                     help="목표 변동률 (%%)")
+    tr.add_argument("--symbol", type=str, default="BTCUSDT",
+                     help="Binance 거래쌍 심볼")
+    tr.add_argument("--epochs", type=int, default=100)
+    tr.add_argument("--batch-size", type=int, default=64)
+    tr.add_argument("--lr", type=float, default=1e-3)
+    tr.add_argument("--hidden", type=int, default=128)
+    tr.add_argument("--layers", type=int, default=2)
+    tr.add_argument("--fetch-days", type=int, default=5,
+                     help="수집할 일수")
+    tr.add_argument("--save-dir", type=str, default="checkpoints_crypto")
+    tr.add_argument("--mock", action="store_true",
+                     help="모의 데이터로 학습")
+    tr.add_argument("--mock-minutes", type=int, default=500,
+                     help="모의 데이터 길이 (분)")
+    tr.add_argument("--no-onchain", action="store_true",
+                     help="온체인 데이터 사용 안 함")
+    tr.add_argument("--no-exchange-metrics", action="store_true",
+                     help="거래소 보조 지표 사용 안 함")
+    tr.add_argument("--no-fear-greed", action="store_true",
+                     help="Fear & Greed 지수 사용 안 함")
+
+    # --- predict ---
+    pr = sub.add_parser("predict", help="기울기 예측")
+    pr.add_argument("--checkpoint", type=str,
+                     default="checkpoints_crypto/best_model.pt")
+    pr.add_argument("--symbol", type=str, default="BTCUSDT")
+    pr.add_argument("--n", type=int, default=60)
+
+    return parser.parse_args()
+
+
+def cmd_train(args):
+    params = HyperParams(
+        n=args.n,
+        x=args.x,
+        symbol=args.symbol,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.lr,
+        hidden_size=args.hidden,
+        num_layers=args.layers,
+        fetch_days=args.fetch_days,
+        use_onchain=not args.no_onchain,
+        use_exchange_metrics=not args.no_exchange_metrics,
+        use_fear_greed=not args.no_fear_greed,
+    )
+
+    data_df = None
+
+    if args.mock:
+        logger.info("모의 데이터 생성 중 (%d분)...", args.mock_minutes)
+        data_df = generate_mock_data(args.mock_minutes, params)
+        logger.info("모의 데이터 생성 완료: %d rows", len(data_df))
+
+    result = train(params, save_dir=args.save_dir, data_df=data_df)
+
+    print("\n" + "=" * 60)
+    print("학습 완료")
+    print(f"  심볼: {params.symbol}")
+    print(f"  모델 저장: {result['best_model_path']}")
+    if result["metrics"]:
+        m = result["metrics"]
+        print(f"  MSE:  {m['mse']:.6f}")
+        print(f"  MAE:  {m['mae']:.6f}")
+        print(f"  방향 정확도: {m['direction_accuracy']:.2%}")
+    print("=" * 60)
+
+
+def cmd_predict(args):
+    predictor = SlopePredictor.from_checkpoint(args.checkpoint)
+    params = predictor.params
+
+    logger.info("최신 BTC 데이터 로드 중...")
+    df = fetch_all_data(params)
+
+    slope = predictor.predict(df)
+
+    print("\n" + "=" * 60)
+    print(f"비트코인 ({params.symbol}) 기울기 예측")
+    print(f"  설정: n={params.n}분, x={params.x}%")
+    print(f"  예측 기울기: {slope:.4f}")
+    if slope > 0:
+        estimated_minutes = params.x / slope
+        print(f"  방향: 상승")
+        print(f"  해석: {params.x}% 상승에 약 {estimated_minutes:.1f}분 소요 예상")
+    elif slope < 0:
+        estimated_minutes = params.x / abs(slope)
+        print(f"  방향: 하락")
+        print(f"  해석: {params.x}% 하락에 약 {estimated_minutes:.1f}분 소요 예상")
+    else:
+        print(f"  방향: 횡보")
+        print(f"  해석: {params.x}% 변동 가능성 낮음")
+    print("=" * 60)
+
+
+def main():
+    args = parse_args()
+
+    if args.command == "train":
+        cmd_train(args)
+    elif args.command == "predict":
+        cmd_predict(args)
+
+
+if __name__ == "__main__":
+    main()
